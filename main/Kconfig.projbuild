@@ -352,8 +352,8 @@ menu "Airplay ESP Configuration"
 
             choice DISPLAY_BUS
                 prompt "Display bus"
+                default DISPLAY_BUS_SPI if DISPLAY_DRIVER_ST7789
                 default DISPLAY_BUS_I2C
-                depends on !DISPLAY_DRIVER_ST7789
                 help
                     Select the communication bus for the display.
 
