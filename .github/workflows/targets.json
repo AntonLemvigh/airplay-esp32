@@ -87,7 +87,7 @@
     "name": "hifi-esp32-plus-bt",
     "target": "esp32",
     "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.hifi-esp32-plus;config/sdkconfig.defaults.bt",
-    "core": false
+    "core": true
   },
   {
     "name": "hifi-esparagus-bt",

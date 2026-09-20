@@ -71,6 +71,12 @@ esp_err_t iot_board_init(void) {
     return ESP_OK;
   }
 
+  // A previous failed cleanup may still own a bus. Release it before retrying.
+  err = iot_board_deinit();
+  if (err != ESP_OK) {
+    return err;
+  }
+
 #ifdef CONFIG_ETH_W5500_ENABLED
   spi_bus_config_t spi_bus_cfg = {
       .mosi_io_num = BOARD_SPI_MOSI_GPIO,
@@ -101,52 +107,59 @@ esp_err_t iot_board_init(void) {
   err = i2c_new_master_bus(&i2c_cfg, &s_i2c_dac_bus_handle);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to initialize DAC I2C bus: %s", esp_err_to_name(err));
-    return err;
+    goto fail;
   }
   ESP_LOGI(TAG, "DAC I2C bus %d initialized: sda=%d, scl=%d", BOARD_I2C_PORT,
            BOARD_I2C_SDA_GPIO, BOARD_I2C_SCL_GPIO);
 
   dac_register(&dac_pcm51xx_ops);
+  // Cache the saved volume before init so both channel writes are part of
+  // the checked setup, before the DAC can ever be unmuted.
+  float vol_db;
+  if (ESP_OK == settings_get_volume(&vol_db)) {
+    dac_set_volume(vol_db);
+  }
   err = dac_init(s_i2c_dac_bus_handle);
   if (err != ESP_OK) {
-    // Keep going: the I2S output still runs, the DAC just won't be controlled.
     ESP_LOGE(TAG, "Failed to initialize PCM5122: %s", esp_err_to_name(err));
-  } else {
-    float vol_db;
-    if (ESP_OK == settings_get_volume(&vol_db)) {
-      dac_set_volume(vol_db);
-    }
+    goto fail;
   }
 
-  playback_events_register(on_playback_event, NULL);
+  if (playback_events_register(on_playback_event, NULL) != 0) {
+    ESP_LOGE(TAG, "Failed to register DAC playback listener");
+    err = ESP_ERR_NO_MEM;
+    goto fail;
+  }
 
   s_board_initialized = true;
   ESP_LOGI(TAG, "HiFi-ESP32-Plus initialized");
   return ESP_OK;
+
+fail:
+  iot_board_deinit();
+  return err;
 }
 
 esp_err_t iot_board_deinit(void) {
-  if (!s_board_initialized) {
-    return ESP_OK;
-  }
-
+  // Also release resources acquired by an incomplete init.
+  s_board_initialized = false;
   playback_events_unregister(on_playback_event);
-  dac_set_power_mode(DAC_POWER_OFF);
-  dac_deinit();
+  ESP_RETURN_ON_ERROR(dac_deinit(), TAG, "DAC cleanup failed");
 
   if (s_i2c_dac_bus_handle) {
-    i2c_del_master_bus(s_i2c_dac_bus_handle);
+    ESP_RETURN_ON_ERROR(i2c_del_master_bus(s_i2c_dac_bus_handle), TAG,
+                        "I2C cleanup failed");
     s_i2c_dac_bus_handle = NULL;
   }
 
 #ifdef CONFIG_ETH_W5500_ENABLED
   if (s_spi_bus_initialized) {
-    spi_bus_free(BOARD_SPI_HOST);
+    ESP_RETURN_ON_ERROR(spi_bus_free(BOARD_SPI_HOST), TAG,
+                        "SPI cleanup failed");
     s_spi_bus_initialized = false;
   }
 #endif
 
-  s_board_initialized = false;
   return ESP_OK;
 }
 
